@@ -18,7 +18,7 @@ This document answers both parts precisely, distinguishes what's mathematically 
 flowchart LR
     HealthyAlice["Alice (HF >= 1e18 on AAVE)"]
     Adapter
-    NeverDrained["pledgedShares NEVER decreases<br/>via any external call from a non-Alice caller"]
+    NeverDrained["pledgedShares NEVER decreases — via any external call from a non-Alice caller"]
     HealthyAlice -.guaranteed.-> NeverDrained
     Adapter --> NeverDrained
 ```
@@ -109,13 +109,13 @@ The last two are where fungibility shows. Among the set of borrowers who ARE mar
 ```mermaid
 flowchart LR
     subgraph WhatMatters["What economically matters"]
-        Outcome["Aggregate outcome:<br/>sum of drainage across all liquidating borrowers<br/>= sum of vaultStETH redeemed"]
+        Outcome["Aggregate outcome: — sum of drainage across all liquidating borrowers — = sum of vaultStETH redeemed"]
     end
     subgraph WhatShifts["What can shift"]
-        Attribution["Per-borrower attribution<br/>within the liquidating set"]
+        Attribution["Per-borrower attribution — within the liquidating set"]
     end
     WhatMatters --> Acceptable["✓ Always balanced -- no value created or destroyed"]
-    WhatShifts --> Subtle["Some inefficiency for AAVE liquidators who race attackers,<br/>but priced into vaultStETH market value"]
+    WhatShifts --> Subtle["Some inefficiency for AAVE liquidators who race attackers, — but priced into vaultStETH market value"]
 ```
 
 ### The aggregate is preserved
@@ -145,7 +145,7 @@ Bob's vault being drained for "Carol's" vaultStETH is economically equivalent (f
 
 ```mermaid
 flowchart TB
-    Option1["Option 1: Per-vault non-fungible tokens<br/>(vaultStETH_alice, vaultStETH_bob)"]
+    Option1["Option 1: Per-vault non-fungible tokens — (vaultStETH_alice, vaultStETH_bob)"]
     Option1 --> Cost1["✗ Not AAVE-listable -- one feed per asset"]
 
     Option2["Option 2: Origin-tagged vaultStETH"]
@@ -155,7 +155,7 @@ flowchart TB
     Option3 --> Cost3["✗ Cross-contract event verification or trusted relay -- 4-6 weeks audit-scope addition"]
 
     Option4["Option 4: Off-chain coordinator races attackers"]
-    Option4 --> Cost4["✓ Pragmatic -- Keeper marks+liquidates+redeems atomically in one tx;<br/>standard MEV-resistance pattern"]
+    Option4 --> Cost4["✓ Pragmatic -- Keeper marks+liquidates+redeems atomically in one tx; — standard MEV-resistance pattern"]
 ```
 
 ### Option 1 — per-vault non-fungible tokens
@@ -186,7 +186,7 @@ flowchart LR
     AAVE
 
     KeeperBot -.continuously monitors.-> AAVE
-    KeeperBot -->|mark + liquidate + redeem atomically| AdapterCall["Adapter.redeem in same tx<br/>as AAVE.liquidationCall"]
+    KeeperBot -->|mark + liquidate + redeem atomically| AdapterCall["Adapter.redeem in same tx — as AAVE.liquidationCall"]
 
     Adapter -.HF re-check inside redeem.-> AAVE
     Adapter -.drain only marked dashboard.-> Borrower
@@ -216,7 +216,7 @@ flowchart TB
 
     Y --> Halmos["Halmos-proved"]
     P --> Common["Statistically true; one-borrower-at-a-time is the common case"]
-    N --> Tradeoff["Fungibility tradeoff;<br/>aggregate value preserved,<br/>per-vault attribution can shift among liquidating borrowers"]
+    N --> Tradeoff["Fungibility tradeoff; — aggregate value preserved, — per-vault attribution can shift among liquidating borrowers"]
 ```
 
 ### Borrower-facing summary

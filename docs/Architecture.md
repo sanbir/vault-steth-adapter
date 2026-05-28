@@ -41,15 +41,15 @@ Naive solutions either:
 
 ```mermaid
 flowchart TB
-    Borrower["Borrower with their<br/>own stVault"] -->|pledges mint capacity| Adapter
+    Borrower["Borrower with their — own stVault"] -->|pledges mint capacity| Adapter
     Adapter -->|mints vaultStETH 1:1| Borrower
-    Borrower -->|supplies vaultStETH as collateral| AAVE["AAVE Main Spoke<br/>standard listing"]
+    Borrower -->|supplies vaultStETH as collateral| AAVE["AAVE Main Spoke — standard listing"]
     AAVE -->|borrow USDC| Borrower
 
     Liquidator["Liquidator (when borrower unhealthy)"] -->|liquidationCall standard| AAVE
     AAVE -->|transfer vaultStETH| Liquidator
     Liquidator -->|Adapter.redeem in SAME tx| Adapter
-    Adapter -->|mintShares from borrower's vault| Lido["Lido V3 stVault<br/>specific borrower's vault"]
+    Adapter -->|mintShares from borrower's vault| Lido["Lido V3 stVault — specific borrower's vault"]
     Lido -->|stETH| Adapter
     Adapter -->|wrap to wstETH, deliver| Liquidator
 ```
@@ -71,22 +71,22 @@ Two key pieces:
 ```mermaid
 flowchart TB
     subgraph Layer3["Layer 3 — AAVE (standard)"]
-        Spoke["AAVE v4 Main Spoke<br/>(asset listing for vaultStETH)"]
-        UserDebt["Borrower's USDC debt<br/>on AAVE"]
+        Spoke["AAVE v4 Main Spoke — (asset listing for vaultStETH)"]
+        UserDebt["Borrower's USDC debt — on AAVE"]
     end
 
     subgraph Layer2["Layer 2 — vault-steth-adapter (this project)"]
-        VaultStETH["VaultStETH<br/>freely-transferable ERC-20"]
-        Adapter["Adapter<br/>issuance + HF-gated redemption"]
-        PledgeGuard["PledgeGuard<br/>per-borrower role wrapper"]
-        Factory["StVaultFactory<br/>atomic deployment"]
+        VaultStETH["VaultStETH — freely-transferable ERC-20"]
+        Adapter["Adapter — issuance + HF-gated redemption"]
+        PledgeGuard["PledgeGuard — per-borrower role wrapper"]
+        Factory["StVaultFactory — atomic deployment"]
     end
 
     subgraph Layer1["Layer 1 — Lido V3 (standard)"]
-        LidoFactory["Lido VaultFactory<br/>creates stVaults"]
-        VaultHub["Lido VaultHub<br/>connects vaults"]
-        Dashboard["Per-borrower Dashboard<br/>access-controlled vault interface"]
-        StakingVault["Per-borrower StakingVault<br/>holds 100 ETH+, runs validators"]
+        LidoFactory["Lido VaultFactory — creates stVaults"]
+        VaultHub["Lido VaultHub — connects vaults"]
+        Dashboard["Per-borrower Dashboard — access-controlled vault interface"]
+        StakingVault["Per-borrower StakingVault — holds 100 ETH+, runs validators"]
         StETH["Lido stETH"]
         WstETH["Lido wstETH"]
     end
@@ -132,14 +132,14 @@ sequenceDiagram
     participant Adapter
     participant VaultStETH
     participant Factory
-    Note over Deployer,Factory: Two-step bootstrap to break the circular dependency<br/>(Adapter needs Factory address; Factory needs Adapter address)
+    Note over Deployer,Factory: Two-step bootstrap breaks the circular dependency — Adapter needs Factory address; Factory needs Adapter address
 
     Deployer->>Deployer: computeCreateAddress(deployer, nonce + 1) -- predict Factory address
     Deployer->>Adapter: new Adapter(stETH, wstETH, predictedFactory, AAVE_POOL)
-    Adapter->>VaultStETH: new VaultStETH(address(this))<br/>Adapter is the ONLY minter/burner
+    Adapter->>VaultStETH: new VaultStETH(address(this)) — Adapter is the ONLY minter/burner
     Adapter->>Adapter: forceApprove(wstETH, type(uint256).max)
     Deployer->>Factory: new StVaultFactory(LIDO_VAULT_FACTORY, address(Adapter))
-    Note over Deployer,Factory: Assert address(Factory) == predictedFactory<br/>or revert deployment
+    Note over Deployer,Factory: Assert address(Factory) == predictedFactory — or revert deployment
 ```
 
 ---
@@ -156,7 +156,7 @@ classDiagram
         +burn(from, amount) onlyAdapter
         +transfer/approve/allowance (standard ERC-20)
     }
-    note for VaultStETH "Standard ERC-20 in every respect except mint/burn,<br/>which are Adapter-only.<br/>Freely transferable so AAVE liquidationCall works unmodified."
+    note for VaultStETH "Standard ERC-20 in every respect except mint/burn, — which are Adapter-only. — Freely transferable so AAVE liquidationCall works unmodified."
 ```
 
 | Property | Value |
@@ -216,11 +216,11 @@ flowchart LR
         SelfRedeem["selfRedeem"]
     end
 
-    Unpledge -->|gate| G1["msg.sender == borrower<br/>AND bucket != 2 liquidation"]
-    Redeem -->|gate| G2["Selected dashboard MUST be:<br/>(bucket=2 AND HF less than 1e18 re-verified)<br/>OR (bucket=1 voluntary)"]
-    SelfRedeem -->|gate| G3["msg.sender == borrower<br/>of the SPECIFIC dashboard"]
+    Unpledge -->|gate| G1["msg.sender == borrower — AND bucket != 2 liquidation"]
+    Redeem -->|gate| G2["Selected dashboard MUST be: — (bucket=2 AND HF less than 1e18 re-verified) — OR (bucket=1 voluntary)"]
+    SelfRedeem -->|gate| G3["msg.sender == borrower — of the SPECIFIC dashboard"]
 
-    G1 --> Invariant["Healthy stVault NEVER drained<br/>by external call"]
+    G1 --> Invariant["Healthy stVault NEVER drained — by external call"]
     G2 --> Invariant
     G3 --> Invariant
 ```
@@ -239,7 +239,7 @@ classDiagram
         +voluntaryDisconnect() ALWAYS REVERTS
         +transferVaultOwnership() ALWAYS REVERTS
     }
-    note for PledgeGuard "Per-borrower Ownable2Step wrapper.<br/>Holds DEFAULT_ADMIN_ROLE on the Dashboard.<br/>Borrower is the owner; can withdraw (bounded by<br/>Lido's withdrawableValue) and pause/resume beacon deposits.<br/>Cannot exit validators, disconnect, or transfer ownership."
+    note for PledgeGuard "Per-borrower Ownable2Step wrapper. — Holds DEFAULT_ADMIN_ROLE on the Dashboard. — Borrower is the owner; can withdraw (bounded by — Lido's withdrawableValue) and pause/resume beacon deposits. — Cannot exit validators, disconnect, or transfer ownership."
 ```
 
 **Why both the Guard AND the Dashboard enforce blocks**: defense in depth. The Dashboard itself blocks the borrower because they don't hold the relevant role; the Guard provides a clear explicit revert (`PledgeStillActive`) for the operations it *could* technically forward but chooses not to.
@@ -258,12 +258,12 @@ sequenceDiagram
 
     Borrower->>Factory: createBorrowerVault(borrower, nodeOp, fee, expiry){value: CONNECT_DEPOSIT}
     Factory->>LidoFactory: createVaultWithDashboard(this, nodeOp, ...)
-    LidoFactory-->>Factory: (StakingVault, Dashboard) addresses<br/>Factory holds DEFAULT_ADMIN_ROLE temporarily
+    LidoFactory-->>Factory: (StakingVault, Dashboard) addresses — Factory holds DEFAULT_ADMIN_ROLE temporarily
     Factory->>PledgeGuard: new PledgeGuard(dashboard, adapter, borrower)
     Factory->>Dashboard: grant DEFAULT_ADMIN_ROLE to PledgeGuard
     Factory->>Dashboard: grant MINT_ROLE to Adapter
-    Factory->>Dashboard: grant WITHDRAW, VOLUNTARY_DISCONNECT, VAULT_CONFIGURATION,<br/>REQUEST_VALIDATOR_EXIT, TRIGGER_VALIDATOR_WITHDRAWAL to PledgeGuard
-    Factory->>Dashboard: grant FUND, BURN, REBALANCE,<br/>PAUSE_BEACON_CHAIN_DEPOSITS, RESUME_BEACON_CHAIN_DEPOSITS to Borrower
+    Factory->>Dashboard: grant WITHDRAW, VOLUNTARY_DISCONNECT, VAULT_CONFIGURATION, — REQUEST_VALIDATOR_EXIT, TRIGGER_VALIDATOR_WITHDRAWAL to PledgeGuard
+    Factory->>Dashboard: grant FUND, BURN, REBALANCE, — PAUSE_BEACON_CHAIN_DEPOSITS, RESUME_BEACON_CHAIN_DEPOSITS to Borrower
     Factory->>Dashboard: revoke DEFAULT_ADMIN_ROLE from self
     Factory->>Adapter: registerDashboard(dashboard, borrower)
     Note over Borrower,Adapter: All in ONE transaction — no half-state possible
@@ -342,14 +342,14 @@ flowchart TB
 ```mermaid
 flowchart TB
     subgraph Humans["Humans / EOAs"]
-        Borrower["Borrower<br/>institutional user"]
-        Liquidator["AAVE Liquidator<br/>profit-motivated EOA or bot"]
-        Attacker["Adversarial Holder<br/>holds vaultStETH from market"]
-        Operator["P2P Operator<br/>runs Keeper bot"]
+        Borrower["Borrower — institutional user"]
+        Liquidator["AAVE Liquidator — profit-motivated EOA or bot"]
+        Attacker["Adversarial Holder — holds vaultStETH from market"]
+        Operator["P2P Operator — runs Keeper bot"]
     end
 
     subgraph Services["Off-chain Services"]
-        KeeperBot["P2P Keeper Bot<br/>marks unhealthy + races attackers"]
+        KeeperBot["P2P Keeper Bot — marks unhealthy + races attackers"]
     end
 
     subgraph Onchain["On-chain Contracts"]
@@ -362,7 +362,7 @@ flowchart TB
     subgraph Protocols["External Protocols"]
         LidoVaultHub["Lido VaultHub"]
         AAVESpoke["AAVE Main Spoke"]
-        NodeOp["Lido NodeOperator<br/>(borrower's choice)"]
+        NodeOp["Lido NodeOperator — (borrower's choice)"]
     end
 
     Borrower -->|createBorrowerVault| Borrower2Contract
@@ -560,14 +560,14 @@ sequenceDiagram
 
     alt Path A — wait for self-redeem
         Borrower->>Adapter: selfRedeem(dashboard, 90, recipient)
-        Note right of Adapter: Borrower drains their OWN vault.<br/>No queue, no HF check needed.
+        Note right of Adapter: Borrower drains their OWN vault. — No queue, no HF check needed.
         Adapter->>Dashboard: mintShares(adapter, 92)
         Dashboard-->>Adapter: stETH minted
         Adapter->>Adapter: wrap to wstETH
         Adapter-->>Borrower: ~90 wstETH to recipient
     else Path B — voluntary opt-in
         Borrower->>Adapter: markForVoluntaryClose(dashboard)
-        Note right of Adapter: Now in voluntary queue.<br/>Anyone holding vaultStETH can redeem against this vault.
+        Note right of Adapter: Now in voluntary queue. — Anyone holding vaultStETH can redeem against this vault.
         Borrower->>Adapter: redeem(90, recipient)
         Adapter-->>Borrower: ~90 wstETH
     end
@@ -591,10 +591,10 @@ sequenceDiagram
     Keeper->>Adapter: markForLiquidation(bobDashboard)
     Adapter->>AAVE: getUserAccountData(Bob)
     AAVE-->>Adapter: HF = 0.95
-    Adapter->>Adapter: pledges[bobDashboard].bucket = 2<br/>liquidationQueue.push(bobDashboard)
+    Adapter->>Adapter: pledges[bobDashboard].bucket = 2 — liquidationQueue.push(bobDashboard)
 
     Keeper->>AAVE: liquidationCall(Bob, USDC, vaultStETH, debtAmount)
-    AAVE->>AAVE: standard seizure: transfer X vaultStETH<br/>from Bob's aToken position to Keeper
+    AAVE->>AAVE: standard seizure: transfer X vaultStETH — from Bob's aToken position to Keeper
     AAVE-->>Keeper: X vaultStETH
 
     Keeper->>Adapter: redeem(X, keeper)
@@ -613,7 +613,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     actor BorrowerBob as Bob (HF=0.95)
-    actor Adversary as Adversary<br/>(holds Alice's vaultStETH from DEX)
+    actor Adversary as Adversary — (holds Alice's vaultStETH from DEX)
     actor Keeper
     participant Adapter
     participant Dashboard
@@ -622,15 +622,15 @@ sequenceDiagram
     Adapter->>Adapter: HF check passes; Bob enters queue
 
     Adversary->>Adapter: redeem(50, adversary)
-    Adapter->>Adapter: queue-head = bobDashboard<br/>re-verify Bob's HF -- passes
+    Adapter->>Adapter: queue-head = bobDashboard — re-verify Bob's HF -- passes
     Adapter->>Dashboard: mintShares from bobDashboard
-    Adapter-->>Adversary: 50 wstETH<br/>Bob's pledgedShares drops to 40
+    Adapter-->>Adversary: 50 wstETH — Bob's pledgedShares drops to 40
 
-    Note over BorrowerBob,Adapter: Aggregate balance preserved.<br/>Bob's vault drained for vaultStETH that originated elsewhere.<br/>Bob is still in liquidation — economically equivalent harm.
+    Note over BorrowerBob,Adapter: Aggregate balance preserved. — Bob's vault drained for vaultStETH that originated elsewhere. — Bob is still in liquidation — economically equivalent harm.
 
     Keeper->>Adapter: redeem(40, keeper) -- continues
     Adapter-->>Keeper: 40 wstETH (drains remaining Bob)
-    Note over Keeper,Adapter: Race outcome: adversary captured 50/90 of Bob's vault output;<br/>Keeper got the rest. Bob's authorization (90) was fully respected.
+    Note over Keeper,Adapter: Race outcome: adversary captured 50/90 of Bob's vault output; — Keeper got the rest. Bob's authorization (90) was fully respected.
 ```
 
 This is the scenario the [Liquidation-guarantees.md](./Liquidation-guarantees.md) doc analyses in depth: **healthy borrowers stay safe, but among liquidating borrowers, vault drainage attribution can shift due to vaultStETH fungibility.**
@@ -663,8 +663,8 @@ sequenceDiagram
         Adapter->>Adapter: _selectMarkedDashboard walks queue
         Adapter->>AAVE: getUserAccountData(Bob)
         AAVE-->>Adapter: HF = 1.5
-        Adapter->>Adapter: would demote Bob and continue,<br/>but no other eligible dashboard
-        Adapter-->>Anyone: revert NoEligibleDashboard<br/>demotion ROLLED BACK
+        Adapter->>Adapter: would demote Bob and continue, — but no other eligible dashboard
+        Adapter-->>Anyone: revert NoEligibleDashboard — demotion ROLLED BACK
     end
 ```
 
@@ -675,14 +675,14 @@ sequenceDiagram
     actor Bob as Bob (in liquidation queue)
     participant Adapter
 
-    Note over Bob,Adapter: Bob still has the BURN_ROLE on his Dashboard<br/>and can selfRedeem against his own vault.<br/>This lets Bob partially or fully exit ahead of a liquidator.
+    Note over Bob,Adapter: Bob still has the BURN_ROLE on his Dashboard — and can selfRedeem against his own vault. — This lets Bob partially or fully exit ahead of a liquidator.
 
     Bob->>Adapter: selfRedeem(bobDashboard, X, bob)
     Adapter->>Adapter: borrower check passes
-    Note right of Adapter: bucket == 2 but selfRedeem<br/>has NO bucket check (unlike unpledge)
+    Note right of Adapter: bucket == 2 but selfRedeem — has NO bucket check (unlike unpledge)
     Adapter-->>Bob: X wstETH
 
-    Note over Bob: Bob uses the wstETH to repay AAVE USDC debt elsewhere;<br/>if HF recovers above 1, dashboard demoted on next cleanup.
+    Note over Bob: Bob uses the wstETH to repay AAVE USDC debt elsewhere; — if HF recovers above 1, dashboard demoted on next cleanup.
 ```
 
 This is by design: a liquidating borrower can race the liquidator. In practice, atomic bots are faster; this path is more about giving the borrower a recovery option than expecting them to win the race.
@@ -697,9 +697,9 @@ This is by design: a liquidating borrower can race the liquidator. In practice, 
 stateDiagram-v2
     [*] --> Unregistered: before registerDashboard
     Unregistered --> Bucket0: registerDashboard by Factory
-    Bucket0: bucket = 0<br/>(unmarked)
-    Bucket1: bucket = 1<br/>(voluntary close)
-    Bucket2: bucket = 2<br/>(liquidation queue)
+    Bucket0: bucket = 0 — (unmarked)
+    Bucket1: bucket = 1 — (voluntary close)
+    Bucket2: bucket = 2 — (liquidation queue)
 
     Bucket0 --> Bucket1: markForVoluntaryClose by borrower
     Bucket0 --> Bucket2: markForLiquidation if HF less than 1e18
@@ -729,10 +729,10 @@ stateDiagram-v2
 ```mermaid
 flowchart LR
     Init["pledgedShares = 0"]
-    AfterPledge["pledgedShares += amount<br/>only via pledge"]
-    AfterUnpledge["pledgedShares -= amount<br/>only via unpledge<br/>(blocked if bucket=2)"]
-    AfterRedeem["pledgedShares -= amount<br/>only via redeem on marked"]
-    AfterSelfRedeem["pledgedShares -= amount<br/>only via selfRedeem (own)"]
+    AfterPledge["pledgedShares += amount — only via pledge"]
+    AfterUnpledge["pledgedShares -= amount — only via unpledge — (blocked if bucket=2)"]
+    AfterRedeem["pledgedShares -= amount — only via redeem on marked"]
+    AfterSelfRedeem["pledgedShares -= amount — only via selfRedeem (own)"]
 
     Init --> AfterPledge
     AfterPledge --> AfterPledge
@@ -787,12 +787,12 @@ flowchart LR
         I1["Healthy stVault never drained"]
     end
     subgraph EnforcedBy["Enforced jointly by:"]
-        AdapterAccess["Adapter access control<br/>(NotBorrower, NotRegistered)"]
-        AdapterHF["Adapter HF gating<br/>(BorrowerHealthy revert at mark time,<br/>HF re-verify at selection time)"]
-        AdapterQueue["Adapter queue restriction<br/>(redeem only drains marked dashboards)"]
-        VaultStETHAccess["VaultStETH onlyAdapter<br/>(no rogue minting)"]
-        PledgeGuardBlocks["PledgeGuard blocks<br/>pledge-undermining actions"]
-        FactoryAtomic["Factory atomic deployment<br/>(no half-state)"]
+        AdapterAccess["Adapter access control — (NotBorrower, NotRegistered)"]
+        AdapterHF["Adapter HF gating — (BorrowerHealthy revert at mark time, — HF re-verify at selection time)"]
+        AdapterQueue["Adapter queue restriction — (redeem only drains marked dashboards)"]
+        VaultStETHAccess["VaultStETH onlyAdapter — (no rogue minting)"]
+        PledgeGuardBlocks["PledgeGuard blocks — pledge-undermining actions"]
+        FactoryAtomic["Factory atomic deployment — (no half-state)"]
     end
 
     AdapterAccess --> I1
@@ -829,13 +829,13 @@ I1 is the headline invariant. Every other invariant (I2-I13) is either a sub-pro
 
 ```mermaid
 flowchart TB
-    Stuck["liquidation queue has stale entries<br/>(borrowers who recovered)"]
+    Stuck["liquidation queue has stale entries — (borrowers who recovered)"]
     Stuck --> Cleanup["anyone calls cleanupLiquidationQueue(N)"]
     Cleanup --> Adapter
     Adapter --> Loop["walk up to N entries"]
     Loop --> Check["read HF for each via AAVE"]
     Check -->|HF less than 1e18| KeepHead["stop walking, queue head is valid"]
-    Check -->|HF >= 1e18| Demote["demote bucket to 0,<br/>advance head"]
+    Check -->|HF >= 1e18| Demote["demote bucket to 0, — advance head"]
     Demote --> Loop
     KeepHead --> Done["queue cleaned"]
 
@@ -851,22 +851,22 @@ flowchart TB
 ```mermaid
 flowchart TB
     subgraph PathA["Path A — Custom AAVE Spoke"]
-        A1["Custom Spoke overrides liquidationCall<br/>and _processUserAccountData"]
-        A2["Per-vault isolation enforced<br/>at AAVE protocol layer"]
-        A3["Cost: 9-12 months<br/>$800k-$1.5M audit<br/>Heavy AAVE governance ask"]
+        A1["Custom Spoke overrides liquidationCall — and _processUserAccountData"]
+        A2["Per-vault isolation enforced — at AAVE protocol layer"]
+        A3["Cost: 9-12 months — $800k-$1.5M audit — Heavy AAVE governance ask"]
     end
 
     subgraph PathB["Path B — Babylon-shape with Swap Spoke"]
-        B1["Standard Spoke for lending<br/>+ Custom Swap Spoke for liquidation"]
+        B1["Standard Spoke for lending — + Custom Swap Spoke for liquidation"]
         B2["Transfer-restricted vaultStETH"]
-        B3["Necessary for Babylon -- BTC settlement is slow.<br/>Unnecessary for Ethereum-native (atomic settlement)."]
+        B3["Necessary for Babylon -- BTC settlement is slow. — Unnecessary for Ethereum-native (atomic settlement)."]
         B4["Cost: 6 months, $500k audit, 2 AIPs"]
     end
 
     subgraph PathC["Path C — THIS PROJECT"]
-        C1["Standard Main Spoke listing<br/>+ Adapter handles redemption"]
-        C2["Per-vault isolation enforced by<br/>Adapter policy (HF-gated)"]
-        C3["Healthy stVault never drained<br/>(Halmos-proved)"]
+        C1["Standard Main Spoke listing — + Adapter handles redemption"]
+        C2["Per-vault isolation enforced by — Adapter policy (HF-gated)"]
+        C3["Healthy stVault never drained — (Halmos-proved)"]
         C4["Cost: 3 months, $300-400k audit, 1 AIP"]
     end
 
