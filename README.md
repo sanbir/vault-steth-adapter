@@ -4,11 +4,13 @@
 
 Borrowers can pledge mint capacity from their per-borrower Lido stVault, receive a freely-transferable ERC-20 (`vaultStETH`), supply it as collateral on AAVE Main Spoke, and borrow stablecoins against it. At liquidation, a liquidator receives `vaultStETH` via standard AAVE liquidation logic and atomically redeems it for real wstETH from the borrower's specific vault in the same transaction.
 
+> **📐 Start here**: [`docs/Architecture.md`](docs/Architecture.md) — the full architecture reference with ~18 Mermaid diagrams covering layers, contracts, actors, roles, user stories, fund flows, state machines, and invariants. The rest of this README is a quick-start; the Architecture doc is the canonical reference.
+
 **Key properties:**
 - **Zero custom AAVE Spokes.** A single asset-listing AIP is the entire AAVE governance ask. The custom logic lives entirely on our side (one ERC-20, one Adapter, one PledgeGuard pattern, one atomic Factory) and uses standard `IDashboard.mintShares` against real Lido vaults.
 - **Healthy stVault never drained.** External redemption is gated by on-chain AAVE `healthFactor` reads. A redemption against a borrower's vault requires either (a) the borrower's HF < 1e18 on AAVE Main Spoke, OR (b) the borrower's explicit voluntary-close opt-in, OR (c) the caller IS the borrower. This invariant is formally verified by Halmos symbolic execution against the Adapter's full external surface — 12/12 checks pass, covering every reachable calldata combination.
 
-See [`docs/ADR.md`](docs/ADR.md) for the architecture decision (including the rejected alternatives) and [`docs/Implementation-Plan.md`](docs/Implementation-Plan.md) for the build plan.
+See [`docs/Architecture.md`](docs/Architecture.md) for the full architecture, [`docs/ADR.md`](docs/ADR.md) for the architecture decision (including the rejected alternatives), [`docs/Liquidation-guarantees.md`](docs/Liquidation-guarantees.md) for what is and isn't structurally guaranteed, and [`docs/Implementation-Plan.md`](docs/Implementation-Plan.md) for the build plan.
 
 ## Architecture in one diagram
 
