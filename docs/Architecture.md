@@ -132,7 +132,7 @@ sequenceDiagram
     participant Adapter
     participant VaultStETH
     participant Factory
-    Note over Deployer,Factory: Two-step bootstrap breaks the circular dependency — Adapter needs Factory address; Factory needs Adapter address
+    Note over Deployer,Factory: Two-step bootstrap breaks the circular dependency — Adapter needs Factory address — Factory needs Adapter address
 
     Deployer->>Deployer: computeCreateAddress(deployer, nonce + 1) -- predict Factory address
     Deployer->>Adapter: new Adapter(stETH, wstETH, predictedFactory, AAVE_POOL)
@@ -619,7 +619,7 @@ sequenceDiagram
     participant Dashboard
 
     Adversary->>Adapter: markForLiquidation(bobDashboard)
-    Adapter->>Adapter: HF check passes; Bob enters queue
+    Adapter->>Adapter: HF check passes, Bob enters queue
 
     Adversary->>Adapter: redeem(50, adversary)
     Adapter->>Adapter: queue-head = bobDashboard — re-verify Bob's HF -- passes
@@ -630,7 +630,7 @@ sequenceDiagram
 
     Keeper->>Adapter: redeem(40, keeper) -- continues
     Adapter-->>Keeper: 40 wstETH (drains remaining Bob)
-    Note over Keeper,Adapter: Race outcome: adversary captured 50/90 of Bob's vault output; — Keeper got the rest. Bob's authorization (90) was fully respected.
+    Note over Keeper,Adapter: Race outcome — adversary captured 50/90 of Bob's vault output, Keeper got the rest. Bob's authorization (90) was fully respected.
 ```
 
 This is the scenario the [Liquidation-guarantees.md](./Liquidation-guarantees.md) doc analyses in depth: **healthy borrowers stay safe, but among liquidating borrowers, vault drainage attribution can shift due to vaultStETH fungibility.**
@@ -656,7 +656,7 @@ sequenceDiagram
         Anyone->>Adapter: cleanupLiquidationQueue(10)
         Adapter->>AAVE: getUserAccountData(Bob)
         AAVE-->>Adapter: HF = 1.5
-        Adapter->>Adapter: bucket = 0, demoted; head advances
+        Adapter->>Adapter: bucket reset to 0 demoted and head advances
         Note over Adapter: Demotion persists since cleanup didn't revert
     else Someone tries redeem before cleanup
         Anyone->>Adapter: redeem(X, recipient)
@@ -682,7 +682,7 @@ sequenceDiagram
     Note right of Adapter: bucket == 2 but selfRedeem — has NO bucket check (unlike unpledge)
     Adapter-->>Bob: X wstETH
 
-    Note over Bob: Bob uses the wstETH to repay AAVE USDC debt elsewhere; — if HF recovers above 1, dashboard demoted on next cleanup.
+    Note over Bob: Bob uses the wstETH to repay AAVE USDC debt elsewhere — if HF recovers above 1 the dashboard is demoted on next cleanup
 ```
 
 This is by design: a liquidating borrower can race the liquidator. In practice, atomic bots are faster; this path is more about giving the borrower a recovery option than expecting them to win the race.
