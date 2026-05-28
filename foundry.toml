@@ -1,0 +1,26 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+test = "test"
+solc = "0.8.25"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+fs_permissions = [{ access = "read", path = "./" }]
+
+# Long mainnet-fork tests benefit from verbose traces.
+verbosity = 3
+gas_reports = ["*"]
+
+[fmt]
+line_length = 120
+tab_width = 4
+quote_style = "double"
+number_underscore = "remove"
+
+[rpc_endpoints]
+mainnet = "${MAINNET_RPC_URL}"
+
+[etherscan]
+mainnet = { key = "${ETHERSCAN_API_KEY}" }

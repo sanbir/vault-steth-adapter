@@ -1,0 +1,14 @@
+# Foundry / forge output
+cache/
+out/
+broadcast/
+forge-cache/
+
+# Env
+.env
+.env.local
+
+# IDE / OS
+.DS_Store
+.vscode/
+.idea/
