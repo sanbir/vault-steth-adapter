@@ -14,6 +14,8 @@ import {IVaultHub} from "../src/interfaces/IVaultHub.sol";
 import {IStakingVault} from "../src/interfaces/IStakingVault.sol";
 import {IStETH, IWstETH} from "../src/interfaces/ILido.sol";
 
+import {MockAavePool} from "./mocks/MockAavePool.sol";
+
 /// @notice Shared scaffolding for the vault-steth-adapter fork tests.
 ///
 ///         End-to-end strategy (mirrors auto-rebalancer-safe-modules / Path A):
@@ -38,6 +40,7 @@ abstract contract BaseFork is Test {
     Adapter internal adapter;
     VaultStETH internal vaultStETH;
     StVaultFactory internal factory;
+    MockAavePool internal aavePool;
 
     // ---- real mainnet contracts ----
     IStETH internal stETH = IStETH(Addresses.STETH);
@@ -77,23 +80,48 @@ abstract contract BaseFork is Test {
     }
 
     /// @dev Bootstrap order:
-    ///        1. Predict the address of the StVaultFactory (at deployer's nonce + 1).
-    ///        2. Deploy Adapter with the predicted factory address.
-    ///        3. Deploy StVaultFactory pointing at the Adapter.
+    ///        1. Deploy the MockAavePool (real deployed contract, not vm.mockCall).
+    ///        2. Predict the address of the StVaultFactory (at deployer's nonce + 2).
+    ///        3. Deploy Adapter with predicted factory + AAVE pool addresses.
+    ///        4. Deploy StVaultFactory pointing at the Adapter.
     function _deployOurContracts() internal {
+        aavePool = new MockAavePool();
+
         address deployer = address(this);
         uint64 nonce = vm.getNonce(deployer);
         address predictedFactory = vm.computeCreateAddress(deployer, nonce + 1);
 
-        adapter = new Adapter(address(stETH), address(wstETH), predictedFactory);
+        adapter = new Adapter(
+            address(stETH), address(wstETH), predictedFactory, address(aavePool)
+        );
         factory = new StVaultFactory(address(lidoFactory), address(adapter));
         require(address(factory) == predictedFactory, "factory address mismatch");
 
         vaultStETH = adapter.VAULT_STETH();
 
+        vm.label(address(aavePool), "MockAavePool");
         vm.label(address(adapter), "Adapter");
         vm.label(address(factory), "StVaultFactory");
         vm.label(address(vaultStETH), "vaultStETH");
+    }
+
+    // ============================================================================
+    //                            AAVE health-factor helpers
+    // ============================================================================
+
+    /// @notice Make `who` look healthy on AAVE (HF = type(uint256).max).
+    function _makeHealthy(address who) internal {
+        aavePool.setHealthFactor(who, type(uint256).max);
+    }
+
+    /// @notice Make `who` look unhealthy / liquidatable on AAVE (HF = 0.5e18).
+    function _makeUnhealthy(address who) internal {
+        aavePool.setHealthFactor(who, 0.5e18);
+    }
+
+    /// @notice Set `who`'s healthFactor to exactly `hf`.
+    function _setHF(address who, uint256 hf) internal {
+        aavePool.setHealthFactor(who, hf);
     }
 
     // ============================================================================

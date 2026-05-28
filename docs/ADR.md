@@ -59,7 +59,7 @@ We have three viable architectures:
 
 ### Negative
 
-- **Per-vault isolation is policy-enforced, not structural.** Babylon's two-Spoke design enforces vault binding at the AAVE / Bitcoin-script layer. Ours enforces it via the Adapter's redemption queue. Adversarial scenarios where a vaultStETH holder tries to drain a non-liquidated borrower's vault are blocked by the queue's priority rules, but the protection lives in our contract rather than in AAVE's. Acceptable per stakeholder confirmation (see decision context in `Aegis×Babylon_liquidation-5.md`).
+- **Per-vault isolation is policy-enforced, not structural.** Babylon's two-Spoke design enforces vault binding at the AAVE / Bitcoin-script layer. Ours enforces it via the Adapter's HF-gated redemption queue. The protection lives in our contract rather than in AAVE's. Acceptable per stakeholder confirmation (see decision context in `Aegis×Babylon_liquidation-5.md`). **Update (production hardening):** the policy is now strict on-chain — see "Production Hardening" section below.
 - **vaultStETH is yield-static, not yield-bearing.** Validator yield accrues to the vault owner (the borrower), not to vaultStETH holders. Different economic model from wstETH (which IS yield-bearing). This must be clearly disclosed in the AAVE risk review and in user-facing docs.
 - **vaultStETH price feed needs a custom adapter.** The natural price feed is `1 vaultStETH ≈ 1 stETH at issuance`, but as time passes the issuing vault accumulates yield that's not reflected in vaultStETH price. We need either: (a) a yield-distribution mechanism that periodically rebases vaultStETH supply, OR (b) a price feed that values vaultStETH at issue rate minus expected redemption-time difference. Default plan: (b) with conservative haircut.
 - **Path A's per-borrower NodeOp / Dashboard sales pitch becomes harder.** Borrowers still own their stVault and pick their NodeOp, but at the AAVE level they look like generic LST holders. Marketing implication: lean on "your vault, your NodeOp, your yield" rather than "AAVE-level isolation."
@@ -83,9 +83,50 @@ We have three viable architectures:
 
 Architecture decision approved by the project's product owner via the conversation thread that produced `Aegis×Babylon_liquidation-5.md`. Stakeholder confirmation that "per-vault isolation enforced by Adapter policy, not by the AAVE layer" is an acceptable trade is recorded there.
 
+## Production Hardening (Update 2026-05-28)
+
+### Problem revisited
+
+The initial Path C implementation accepted a known weakness: **a healthy borrower's vault could be drained by external callers** when the Adapter's general FIFO queue was the only routing rule. Concretely: if Alice and Bob both pledged, Alice was queue-head, and Bob got liquidated on AAVE, a naive liquidator could call `Adapter.redeem` without `markForLiquidation(bobDashboard)` first — and the Adapter would drain Alice's vault even though Alice was healthy.
+
+Stakeholder feedback escalated this from "acceptable policy-level tradeoff" to "must be structurally prevented before mainnet." This update implements that hardening.
+
+### What changed
+
+1. **General FIFO queue removed from the external redemption path.** `redeem` ONLY drains dashboards that are in the liquidation queue OR the voluntary queue. Unmarked dashboards are never drained by `redeem`.
+
+2. **`markForLiquidation` is now HF-gated.** It calls `AAVE_POOL.getUserAccountData(borrower)` and reverts unless `healthFactor < 1e18`. A healthy borrower cannot be marked. Permissionless to call, but only succeeds for legitimately-liquidating borrowers.
+
+3. **`_selectMarkedDashboard` re-verifies HF at selection time.** Between marking and redemption, a borrower may recover (AAVE deposit, price rebound). The selector reads HF again and demotes recovered borrowers in-flight. Demotion is also exposed via the public `cleanupLiquidationQueue(maxIterations)` function so it can persist even when redeem reverts.
+
+4. **`selfRedeem(dashboard, shares, recipient)` added.** Lets a borrower drain their OWN vault without needing to be marked, replacing the general-FIFO path's "any pledged vault is drainable by its borrower" property.
+
+5. **Constructor takes an `IAavePool` address.** This is the source of healthFactor reads. Production deployment points at AAVE v4 Main Spoke; tests use a deployed `MockAavePool`.
+
+### Formal verification
+
+The production invariant — **"a healthy stVault is never drained by an external call"** — is now formally proven by Halmos symbolic execution in [`test/HalmosInvariants.t.sol`](../test/HalmosInvariants.t.sol). 12/12 checks pass, covering every reachable calldata combination on the Adapter's full external surface (68 paths for the main invariant alone).
+
+```
+[PASS] check_HealthyAliceNeverDrainedByExternalCall       (68 paths)
+[PASS] check_HealthyAliceUntouchedEvenWhenBobLiquidating  (78 paths)
+[PASS] check_HealthyAliceUntouchedEvenWhenBobVoluntary    (77 paths)
+... 9 more focused checks ...
+```
+
+This shifts the "per-vault isolation is policy-enforced" caveat from a soft assurance to a mathematically-verified property of the production code.
+
+### Negative consequences of hardening
+
+- **Borrowers must `selfRedeem` rather than `redeem` to drain their own vault.** Two functions instead of one. Minor UX friction; the frontend hides it.
+- **Liquidator bots must call `markForLiquidation` before `redeem`.** This was already required in the old design as a queue-priority signal; now it's required for correctness. Standard practice in the Aegis-style liquidator pattern.
+- **Cleanup of recovered borrowers requires explicit calls.** `cleanupLiquidationQueue` is permissionless; a Keeper bot or any participant calls it periodically. Without cleanup, recovered borrowers' dashboards sit in the queue but are skipped at selection (correctness preserved; only operational tidiness).
+
 ## References
 
-- [Aegis×Babylon_liquidation-5.md](../../Aegis%C3%97Babylon_liquidation-5.md) — the final architecture summary that triggered this decision.
+- [Aegis×Babylon_liquidation-5.md](../../Aegis%C3%97Babylon_liquidation-5.md) — the final architecture summary that triggered the original decision.
+- [Aegis-User-interactions.md](../../Aegis-User-interactions.md) — comparison of the user-facing interaction surface between Aegis and this design.
 - [About-AAVE-v4.md](../../../aave/About-AAVE-v4.md) — the AAVE v4 architecture this design plugs into.
+- [Halmos](https://github.com/a16z/halmos) — symbolic execution tool used for the formal-verification suite.
 - [stvaults-liquidation-manager](../../stvaults-liquidation-manager) — Path A implementation, kept for reference.
 - [auto-rebalancer-safe-modules](../../../auto-rebalancer-safe-modules) — reference for test style and conventions.

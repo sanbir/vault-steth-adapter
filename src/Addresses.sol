@@ -17,6 +17,12 @@ library Addresses {
     // -------- AAVE v4 (asset-listing target only; we don't deploy anything here) --------
     address internal constant AAVE_V4_MAIN_SPOKE = 0x94e7A5dCbE816e498b89aB752661904E2F56c485;
 
+    // -------- AAVE v3 Pool (used as healthFactor source until v4 Main Spoke is live) --------
+    /// @dev v3 Pool exposes the same `getUserAccountData(address) returns (..., healthFactor)`
+    ///      signature as v4 Main Spoke. The Adapter reads only `healthFactor`, so it works
+    ///      against either deployment.
+    address internal constant AAVE_V3_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
+
     // -------- Chainlink --------
     address internal constant CHAINLINK_ETH_USD   = 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419;
     address internal constant CHAINLINK_STETH_ETH = 0x86392dC19c0b719886221c78AB11eb8Cf5c52812;

@@ -7,9 +7,10 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 
 import {IDashboard} from "./interfaces/IDashboard.sol";
 import {IStETH, IWstETH} from "./interfaces/ILido.sol";
+import {IAavePool} from "./interfaces/IAavePool.sol";
 import {VaultStETH} from "./VaultStETH.sol";
 
-/// @title Adapter — vaultStETH issuance + redemption queue
+/// @title Adapter (production-hardened) — vaultStETH issuance + invariant-protected redemption
 ///
 /// @notice The Adapter is the only address allowed to mint and burn vaultStETH. It holds
 ///         MINT_ROLE on the Lido Dashboard of every pledged vault, and uses that role to
@@ -25,24 +26,40 @@ import {VaultStETH} from "./VaultStETH.sol";
 ///               of vaultStETH to the borrower.
 ///           5.  Borrower supplies the freshly-minted vaultStETH to AAVE Main Spoke as
 ///               collateral.
-///           6.  At redemption (liquidation, voluntary close, or third-party redeem), the
-///               Adapter selects a dashboard from its priority queue, calls
-///               `IDashboard.mintShares(recipient, amount + 2 wei buffer)` on it, wraps
-///               the resulting stETH to wstETH, and delivers wstETH to the recipient.
+///           6.  At redemption, ONE OF the following must hold:
+///                 a. `redeem(...)`: only drains dashboards whose borrower has
+///                    `healthFactor < 1e18` on AAVE Main Spoke (liquidation queue) OR
+///                    whose borrower explicitly opted for voluntary close (voluntary queue).
+///                 b. `selfRedeem(dashboard, ...)`: caller MUST be `borrower[dashboard]`.
+///                    Bypasses queues; lets a borrower wind down their own position.
 ///
-///         Redemption queue priorities:
-///           a. `liquidationQueue`  — dashboards whose owner has been flagged as in active
-///                                    liquidation on AAVE. Drains FIRST.
-///           b. `voluntaryQueue`    — dashboards whose owner explicitly marked for close.
-///           c. `generalFifo`       — every active pledge, drained oldest-first only when
-///                                    a/b are empty.
-///
-///         The Adapter does NOT custody any user assets except:
-///           - The MINT_ROLE it holds transiently on each pledged dashboard.
-///           - stETH minted during redemption is immediately wrapped to wstETH and forwarded.
+/// @notice Production invariant (formally verified by Halmos in test/HalmosInvariants.t.sol):
+///         `pledges[d].pledgedShares` can only decrease in a transaction whose direct
+///         caller (`msg.sender` of the entry function) is one of:
+///           (1) the borrower of `d` (via `unpledge`, `selfRedeem`, or `redeem` against
+///               a self-marked voluntary or self-liquidating vault), OR
+///           (2) any caller acting on a `d` whose borrower has `healthFactor < 1e18`
+///               (verified on AAVE at the moment of selection — recovered borrowers are
+///               demoted in-flight), OR
+///           (3) any caller acting on a `d` whose `bucket == 1` (voluntary close, set
+///               by the borrower themselves).
+///         There is NO code path through which a healthy borrower's vault can have its
+///         `pledgedShares` reduced by a non-borrower.
 contract Adapter is ReentrancyGuard {
     using SafeERC20 for IERC20;
     using SafeERC20 for IWstETH;
+
+    // ============================================================================
+    //                                  Constants
+    // ============================================================================
+
+    /// @notice AAVE's healthFactor threshold below which a borrower is liquidatable. AAVE
+    ///         uses 1e18 (= 1.0) as the boundary; HF < 1e18 means under-collateralized.
+    uint256 public constant HF_LIQUIDATION_THRESHOLD = 1e18;
+
+    /// @notice Mint buffer in stETH-shares. Lido rounding requires a 2-wei buffer on
+    ///         shares→wstETH roundtrips so the recipient receives the exact requested amount.
+    uint256 public constant MINT_BUFFER_SHARES = 2;
 
     // ============================================================================
     //                                  Immutables
@@ -52,6 +69,7 @@ contract Adapter is ReentrancyGuard {
     IStETH    public immutable STETH;
     IWstETH   public immutable WSTETH;
     address   public immutable FACTORY;
+    IAavePool public immutable AAVE_POOL;
 
     // ============================================================================
     //                                   Storage
@@ -59,34 +77,27 @@ contract Adapter is ReentrancyGuard {
 
     /// @notice Per-dashboard pledge state.
     /// @dev `borrower` is set on `registerDashboard`; `pledgedShares` accrues on `pledge`
-    ///      and decreases on redemption from this dashboard. `bucket` records which
-    ///      priority queue this dashboard is currently in: 0 = none/general, 1 = voluntary,
-    ///      2 = liquidation.
+    ///      and decreases ONLY through invariant-protected paths.
+    ///      `bucket`: 0 = unmarked (default, can only be drained via `selfRedeem`),
+    ///                1 = voluntary close (borrower opt-in, drainable by anyone via `redeem`),
+    ///                2 = liquidation (HF < 1e18 confirmed at marking time AND re-confirmed
+    ///                                 at selection time).
     struct Pledge {
         address borrower;
         uint128 pledgedShares;
-        uint8   bucket;           // 0 = general, 1 = voluntary, 2 = liquidation
+        uint8   bucket;
         bool    registered;
     }
 
     mapping(address dashboard => Pledge) public pledges;
 
-    /// @notice FIFO ring buffers for the three priority queues.
-    /// @dev We keep these as plain arrays + head pointers. A dashboard can appear in at
-    ///      most one queue at any time; the `bucket` field on the Pledge struct says which.
+    /// @notice FIFO ring buffers for the two drainable queues. A dashboard is in at most
+    ///         one queue at a time; the `bucket` field is authoritative.
     address[] public liquidationQueue;
     uint256 public liquidationHead;
 
     address[] public voluntaryQueue;
     uint256 public voluntaryHead;
-
-    address[] public generalFifo;
-    uint256 public generalHead;
-
-    /// @notice Mint buffer in stETH-shares. Lido rounding requires a 2-wei buffer on
-    ///         shares→wstETH roundtrips so the recipient receives the exact requested
-    ///         amount.
-    uint256 public constant MINT_BUFFER_SHARES = 2;
 
     // ============================================================================
     //                                    Events
@@ -101,8 +112,16 @@ contract Adapter is ReentrancyGuard {
         uint256 sharesBurnt,
         uint256 wstEthDelivered
     );
-    event MarkedForLiquidation(address indexed dashboard, address indexed marker);
+    event SelfRedeemed(
+        address indexed dashboard,
+        address indexed borrower,
+        address indexed recipient,
+        uint256 sharesBurnt,
+        uint256 wstEthDelivered
+    );
+    event MarkedForLiquidation(address indexed dashboard, address indexed marker, uint256 healthFactor);
     event MarkedForVoluntaryClose(address indexed dashboard, address indexed borrower);
+    event DemotedFromLiquidation(address indexed dashboard, uint256 healthFactor);
 
     // ============================================================================
     //                                    Errors
@@ -115,22 +134,27 @@ contract Adapter is ReentrancyGuard {
     error NotBorrower();
     error InsufficientPledgedShares();
     error InsufficientMintCapacity();
-    error QueueEmpty();
-    error NotInLiquidation();
+    error NoEligibleDashboard();
     error AlreadyMarked();
+    error BorrowerHealthy(uint256 healthFactor);
     error PledgeStillActive();
+    error ZeroShares();
 
     // ============================================================================
     //                                  Constructor
     // ============================================================================
 
-    constructor(address stEth_, address wstEth_, address factory_) {
-        if (stEth_ == address(0) || wstEth_ == address(0) || factory_ == address(0)) {
+    constructor(address stEth_, address wstEth_, address factory_, address aavePool_) {
+        if (
+            stEth_ == address(0) || wstEth_ == address(0) || factory_ == address(0)
+                || aavePool_ == address(0)
+        ) {
             revert ZeroAddress();
         }
         STETH = IStETH(stEth_);
         WSTETH = IWstETH(wstEth_);
         FACTORY = factory_;
+        AAVE_POOL = IAavePool(aavePool_);
 
         // Deploy the vaultStETH ERC-20 with this Adapter as the only minter/burner.
         VAULT_STETH = new VaultStETH(address(this));
@@ -145,8 +169,6 @@ contract Adapter is ReentrancyGuard {
 
     /// @notice Register a freshly-deployed Dashboard. Called by the Factory atomically with
     ///         the Dashboard's role wiring.
-    /// @dev    The Factory has granted `MINT_ROLE` on this Dashboard to this Adapter as part
-    ///         of the deployment. We do not check it here — that's the Factory's job.
     function registerDashboard(address dashboard, address borrower) external {
         if (msg.sender != FACTORY) revert OnlyFactory();
         if (dashboard == address(0) || borrower == address(0)) revert ZeroAddress();
@@ -167,46 +189,35 @@ contract Adapter is ReentrancyGuard {
     // ============================================================================
 
     /// @notice Pledge `shares` of mint capacity from `dashboard` and mint vaultStETH to caller.
-    /// @dev    Caller MUST be the registered borrower for the dashboard. `shares` MUST be
-    ///         within the dashboard's `remainingMintingCapacityShares(0)`.
+    /// @dev    Caller MUST be the registered borrower for the dashboard.
     function pledge(address dashboard, uint256 shares) external nonReentrant {
         Pledge storage p = pledges[dashboard];
         if (!p.registered) revert NotRegistered();
         if (msg.sender != p.borrower) revert NotBorrower();
+        if (shares == 0) revert ZeroShares();
 
-        // Capacity check against Lido's current state.
         uint256 capacity = IDashboard(dashboard).remainingMintingCapacityShares(0);
         if (shares > capacity) revert InsufficientMintCapacity();
 
-        // Update pledge state.
         p.pledgedShares += uint128(shares);
 
-        // If this is the first pledge for this dashboard, push it to the general FIFO.
-        if (p.pledgedShares == shares && p.bucket == 0) {
-            generalFifo.push(dashboard);
-        }
-
-        // Mint vaultStETH to the borrower (caller).
         VAULT_STETH.mint(msg.sender, shares);
 
         emit Pledged(dashboard, msg.sender, shares);
     }
 
-    /// @notice Reduce the pledge on `dashboard` by `shares` and burn the corresponding
-    ///         vaultStETH from the caller.
-    /// @dev    Caller MUST be the registered borrower. The pledge must be sufficient. The
-    ///         dashboard must not currently be in the liquidation queue. The caller must
-    ///         hold and approve the full `shares` of vaultStETH.
+    /// @notice Reduce the pledge on `dashboard` by `shares` and burn vaultStETH from caller.
+    /// @dev    Caller MUST be the registered borrower. Dashboard MUST NOT be in liquidation.
     function unpledge(address dashboard, uint256 shares) external nonReentrant {
         Pledge storage p = pledges[dashboard];
         if (!p.registered) revert NotRegistered();
         if (msg.sender != p.borrower) revert NotBorrower();
-        if (p.bucket == 2) revert PledgeStillActive();   // can't unpledge while liquidated
+        if (p.bucket == 2) revert PledgeStillActive();
+        if (shares == 0) revert ZeroShares();
         if (shares > p.pledgedShares) revert InsufficientPledgedShares();
 
         p.pledgedShares -= uint128(shares);
 
-        // Burn vaultStETH from caller. Will revert if caller's balance is insufficient.
         VAULT_STETH.burn(msg.sender, shares);
 
         emit Unpledged(dashboard, msg.sender, shares);
@@ -216,26 +227,29 @@ contract Adapter is ReentrancyGuard {
     //                            Priority queue management
     // ============================================================================
 
-    /// @notice Mark a dashboard's borrower as in active liquidation. Permissionless.
-    /// @dev    For testing / launch, the caller is trusted to verify the on-chain
-    ///         condition (typically: Spoke.getUserAccountData(borrower).healthFactor < 1e18).
-    ///         Production deployments should add a verification step here against the
-    ///         AAVE Spoke. We accept best-effort marking at launch because the redemption
-    ///         path itself enforces the mint succeeds — bad marks just rearrange queue
-    ///         order, not balances.
+    /// @notice Mark a dashboard for liquidation. Permissionless, but ONLY succeeds if the
+    ///         borrower's AAVE healthFactor is strictly below 1e18.
+    /// @dev    This is the FIRST half of the invariant: only legitimately-liquidating
+    ///         borrowers ever enter the liquidation queue. The SECOND half is the re-check
+    ///         in `_selectMarkedDashboard` — a borrower whose HF recovered between marking
+    ///         and selection is demoted instead of drained.
     function markForLiquidation(address dashboard) external {
         Pledge storage p = pledges[dashboard];
         if (!p.registered) revert NotRegistered();
         if (p.bucket == 2) revert AlreadyMarked();
 
+        uint256 hf = _healthFactor(p.borrower);
+        if (hf >= HF_LIQUIDATION_THRESHOLD) revert BorrowerHealthy(hf);
+
         p.bucket = 2;
         liquidationQueue.push(dashboard);
 
-        emit MarkedForLiquidation(dashboard, msg.sender);
+        emit MarkedForLiquidation(dashboard, msg.sender, hf);
     }
 
-    /// @notice Borrower opt-in: mark the vault for voluntary close, moving it to the
-    ///         voluntary-close queue. Useful when winding down a position.
+    /// @notice Borrower opt-in: mark the vault for voluntary close.
+    /// @dev    Only the borrower of the dashboard can call. Sets bucket = 1; bucket may
+    ///         still be upgraded to 2 (liquidation) if the borrower later goes underwater.
     function markForVoluntaryClose(address dashboard) external {
         Pledge storage p = pledges[dashboard];
         if (!p.registered) revert NotRegistered();
@@ -253,72 +267,111 @@ contract Adapter is ReentrancyGuard {
     // ============================================================================
 
     /// @notice Burn `shares` of vaultStETH from caller and mint wstETH to `recipient` by
-    ///         calling `Dashboard.mintShares` on the next vault in priority order.
-    /// @dev    The caller MUST hold `shares` of vaultStETH (we burn from `msg.sender`).
-    ///         Redemption may fail if the selected dashboard's vault no longer has the
-    ///         capacity to mint — in that case the call reverts and the caller can retry
-    ///         (a subsequent governance / operator action would update the queue).
-    /// @return wstEthAmount   The amount of wstETH delivered to `recipient` (= `shares` − 2 wei buffer).
+    ///         calling `Dashboard.mintShares` on the next eligible dashboard.
+    /// @dev    "Eligible" means in the liquidation queue with HF < 1e18 currently, OR in
+    ///         the voluntary queue. Unmarked dashboards are NEVER drained by this path.
     function redeem(uint256 shares, address recipient)
         external
         nonReentrant
         returns (uint256 wstEthAmount)
     {
         if (recipient == address(0)) revert ZeroAddress();
-        if (shares == 0) revert InsufficientPledgedShares();
+        if (shares == 0) revert ZeroShares();
 
-        // Pick the next dashboard.
-        address dashboard = _selectDashboard(shares);
+        address dashboard = _selectMarkedDashboard(shares);
         Pledge storage p = pledges[dashboard];
 
-        // Decrement pledged shares on this dashboard.
         p.pledgedShares -= uint128(shares);
 
-        // Burn vaultStETH from caller. Reverts on insufficient balance.
-        VAULT_STETH.burn(msg.sender, shares);
-
-        // Mint stETH from the dashboard to ourselves, with a 2-wei buffer.
-        uint256 sharesWithBuffer = shares + MINT_BUFFER_SHARES;
-        IDashboard(dashboard).mintShares(address(this), sharesWithBuffer);
-
-        // Wrap stETH → wstETH. wrap() returns wstETH amount; we forward exactly that.
-        // We wrap the FULL stETH balance we just received (the precise amount in stETH
-        // terms is `STETH.getPooledEthByShares(sharesWithBuffer)`).
-        uint256 stEthReceived = STETH.balanceOf(address(this));
-        uint256 wstEthMinted = WSTETH.wrap(stEthReceived);
-
-        // Compute the EXACT wstETH amount that corresponds to `shares` (NOT including
-        // the buffer). That's what the caller paid for. We deliver this exact amount; any
-        // 1-2 wei residual stays in the Adapter as dust.
-        wstEthAmount = WSTETH.getWstETHByStETH(STETH.getPooledEthByShares(shares));
-
-        // Some Lido rounding paths can deliver a tiny bit less wstETH than the perfect
-        // computed value. Cap at what we actually have.
-        if (wstEthAmount > wstEthMinted) {
-            wstEthAmount = wstEthMinted;
-        }
-
-        WSTETH.safeTransfer(recipient, wstEthAmount);
+        wstEthAmount = _drainDashboard(dashboard, shares, recipient);
 
         emit RedeemedFromDashboard(dashboard, recipient, shares, wstEthAmount);
     }
 
-    /// @notice Internal queue walker. Returns the head of the highest-priority non-empty queue.
-    /// @dev    A dashboard at the head whose `pledgedShares < requestedShares` is skipped
-    ///         and removed from its queue; we move on to the next entry. This bounds the
-    ///         work the caller does per redemption (worst case = total queue size).
-    function _selectDashboard(uint256 requestedShares) internal returns (address) {
-        // 1) Liquidation queue.
+    /// @notice Borrower-only redemption against a specific dashboard. Bypasses the queues.
+    ///         Lets a borrower wind down their own position even when no global liquidation
+    ///         or voluntary marking is in effect.
+    /// @dev    Caller MUST be `borrower[dashboard]`. We do not require `bucket != 2` —
+    ///         the borrower can still self-redeem from their liquidating vault (though in
+    ///         practice the liquidator would race them).
+    function selfRedeem(address dashboard, uint256 shares, address recipient)
+        external
+        nonReentrant
+        returns (uint256 wstEthAmount)
+    {
+        if (recipient == address(0)) revert ZeroAddress();
+        if (shares == 0) revert ZeroShares();
+
+        Pledge storage p = pledges[dashboard];
+        if (!p.registered) revert NotRegistered();
+        if (msg.sender != p.borrower) revert NotBorrower();
+        if (shares > p.pledgedShares) revert InsufficientPledgedShares();
+
+        p.pledgedShares -= uint128(shares);
+
+        wstEthAmount = _drainDashboard(dashboard, shares, recipient);
+
+        emit SelfRedeemed(dashboard, msg.sender, recipient, shares, wstEthAmount);
+    }
+
+    // ============================================================================
+    //                          Permissionless queue maintenance
+    // ============================================================================
+
+    /// @notice Walk up to `maxIterations` heads of the liquidation queue, demoting any
+    ///         whose borrower has recovered (HF >= 1e18 on AAVE). Permissionless.
+    /// @dev    This exists so that demotions persist even when a subsequent `redeem` call
+    ///         would revert (Solidity reverts roll back state changes). In practice the
+    ///         Keeper or liquidator bot calls this to keep the queue clean.
+    ///         Returns the number of dashboards demoted.
+    function cleanupLiquidationQueue(uint256 maxIterations) external returns (uint256 demoted) {
+        uint256 walked = 0;
+        while (walked < maxIterations && liquidationHead < liquidationQueue.length) {
+            address d = liquidationQueue[liquidationHead];
+            Pledge storage p = pledges[d];
+            if (p.bucket == 2) {
+                uint256 hf = _healthFactor(p.borrower);
+                if (hf >= HF_LIQUIDATION_THRESHOLD) {
+                    p.bucket = 0;
+                    emit DemotedFromLiquidation(d, hf);
+                    ++demoted;
+                } else {
+                    // Head is still valid - stop walking (queue order preserved).
+                    return demoted;
+                }
+            }
+            unchecked { ++liquidationHead; }
+            ++walked;
+        }
+    }
+
+    // ============================================================================
+    //                              Internal helpers
+    // ============================================================================
+
+    /// @dev Pick the next eligible dashboard:
+    ///        1. Liquidation queue — but re-verify HF < 1e18 at this moment. Demote any
+    ///           head whose borrower has recovered.
+    ///        2. Voluntary queue — borrower opted in; no HF check needed.
+    ///        3. If both are exhausted: revert.
+    ///      A dashboard with insufficient `pledgedShares` is skipped (advances head pointer).
+    function _selectMarkedDashboard(uint256 requestedShares) internal returns (address) {
+        // 1. Liquidation queue with HF re-verification.
         while (liquidationHead < liquidationQueue.length) {
             address d = liquidationQueue[liquidationHead];
             Pledge storage p = pledges[d];
             if (p.bucket == 2 && p.pledgedShares >= requestedShares) {
-                return d;
+                uint256 hf = _healthFactor(p.borrower);
+                if (hf < HF_LIQUIDATION_THRESHOLD) {
+                    return d;
+                }
+                // Borrower recovered between marking and selection. Demote and continue.
+                p.bucket = 0;
+                emit DemotedFromLiquidation(d, hf);
             }
-            // Skip / pop the head.
             unchecked { ++liquidationHead; }
         }
-        // 2) Voluntary close queue.
+        // 2. Voluntary queue.
         while (voluntaryHead < voluntaryQueue.length) {
             address d = voluntaryQueue[voluntaryHead];
             Pledge storage p = pledges[d];
@@ -327,16 +380,35 @@ contract Adapter is ReentrancyGuard {
             }
             unchecked { ++voluntaryHead; }
         }
-        // 3) General FIFO.
-        while (generalHead < generalFifo.length) {
-            address d = generalFifo[generalHead];
-            Pledge storage p = pledges[d];
-            if (p.bucket == 0 && p.pledgedShares >= requestedShares) {
-                return d;
-            }
-            unchecked { ++generalHead; }
+        revert NoEligibleDashboard();
+    }
+
+    /// @dev Common drain logic: mint stETH on the chosen dashboard, wrap to wstETH, forward.
+    function _drainDashboard(address dashboard, uint256 shares, address recipient)
+        internal
+        returns (uint256 wstEthAmount)
+    {
+        VAULT_STETH.burn(msg.sender, shares);
+
+        uint256 sharesWithBuffer = shares + MINT_BUFFER_SHARES;
+        IDashboard(dashboard).mintShares(address(this), sharesWithBuffer);
+
+        uint256 stEthReceived = STETH.balanceOf(address(this));
+        uint256 wstEthMinted = WSTETH.wrap(stEthReceived);
+
+        wstEthAmount = WSTETH.getWstETHByStETH(STETH.getPooledEthByShares(shares));
+        if (wstEthAmount > wstEthMinted) {
+            wstEthAmount = wstEthMinted;
         }
-        revert QueueEmpty();
+
+        WSTETH.safeTransfer(recipient, wstEthAmount);
+    }
+
+    /// @dev Read borrower's healthFactor from AAVE. Reverts on AAVE failure (intentional —
+    ///      a non-reachable AAVE means we cannot safely authorize liquidation drains).
+    function _healthFactor(address borrower) internal view returns (uint256) {
+        (,,,,, uint256 hf) = AAVE_POOL.getUserAccountData(borrower);
+        return hf;
     }
 
     // ============================================================================
@@ -346,21 +418,25 @@ contract Adapter is ReentrancyGuard {
     function queueLengths()
         external
         view
-        returns (uint256 liquidationLen, uint256 voluntaryLen, uint256 generalLen)
+        returns (uint256 liquidationLen, uint256 voluntaryLen)
     {
         liquidationLen = liquidationQueue.length - liquidationHead;
         voluntaryLen = voluntaryQueue.length - voluntaryHead;
-        generalLen = generalFifo.length - generalHead;
     }
 
+    /// @notice Read-only walker. Returns address(0) if nothing is currently drainable via
+    ///         `redeem`. Does NOT mutate state — but note that the actual `redeem` call
+    ///         will re-verify HF and may demote borrowers, so the returned address is a
+    ///         "best guess" rather than a guaranteed selection.
     function nextDashboard() external view returns (address) {
-        // Read-only walker: doesn't mutate head pointers. Returns address(0) if nothing
-        // is currently redeemable.
         uint256 i = liquidationHead;
         while (i < liquidationQueue.length) {
             address d = liquidationQueue[i];
             Pledge storage p = pledges[d];
-            if (p.bucket == 2 && p.pledgedShares > 0) return d;
+            if (p.bucket == 2 && p.pledgedShares > 0) {
+                (,,,,, uint256 hf) = AAVE_POOL.getUserAccountData(p.borrower);
+                if (hf < HF_LIQUIDATION_THRESHOLD) return d;
+            }
             unchecked { ++i; }
         }
         i = voluntaryHead;
@@ -368,13 +444,6 @@ contract Adapter is ReentrancyGuard {
             address d = voluntaryQueue[i];
             Pledge storage p = pledges[d];
             if (p.bucket == 1 && p.pledgedShares > 0) return d;
-            unchecked { ++i; }
-        }
-        i = generalHead;
-        while (i < generalFifo.length) {
-            address d = generalFifo[i];
-            Pledge storage p = pledges[d];
-            if (p.bucket == 0 && p.pledgedShares > 0) return d;
             unchecked { ++i; }
         }
         return address(0);
