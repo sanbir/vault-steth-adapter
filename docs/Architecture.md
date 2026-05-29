@@ -775,9 +775,11 @@ stateDiagram-v2
 | I8 | **A drained dashboard's `pledgedShares` cannot exceed `INITIAL_pledgedShares`; underflow protection** | Adapter (`InsufficientPledgedShares` revert + Solidity 0.8 underflow check) | Forge fork tests |
 | I9 | **`VaultStETH.totalSupply` = sum of `pledgedShares` across all dashboards** | Adapter (1:1 mint↔burn on every pledge/redeem path) | Mechanically true by construction |
 | I10 | **`VaultStETH.mint` and `burn` callable only by Adapter** | VaultStETH (`onlyAdapter` modifier) | [`test/VaultStETH.t.sol`](../test/VaultStETH.t.sol) |
-| I11 | **Borrower cannot withdraw beyond `Dashboard.withdrawableValue`** | PledgeGuard (`ExceedsWithdrawable` revert) + Lido's own gating | [`test/PledgeGuard.t.sol`](../test/PledgeGuard.t.sol) |
+| I11 | **Borrower cannot withdraw stVault ETH below the pledge-backing floor** — after any withdraw, `remainingMintingCapacityShares(0) >= pledged + MINT_BUFFER_SHARES`, so the outstanding vaultStETH stays fully redeemable (this is the fix for the late-mint double-spend) | PledgeGuard (`WouldUnbackPledge` post-check + `ExceedsWithdrawable` + Lido gating) | [`test/DoubleSpend.t.sol`](../test/DoubleSpend.t.sol) (6 fork) + [Halmos `check_WithdrawNeverLeavesPledgeUnbacked`](../test/HalmosGuard.t.sol) (2 symbolic). See [`Double-Spend-Fix.md`](./Double-Spend-Fix.md). |
 | I12 | **Borrower cannot exit validators, voluntary-disconnect, or transfer vault ownership while a pledge exists** | PledgeGuard (always-revert functions) + Dashboard role gating | [`test/PledgeGuard.t.sol`](../test/PledgeGuard.t.sol) |
 | I13 | **No half-deployment is possible** | StVaultFactory (atomic transaction; revert rolls back all state) | [`test/Factory.t.sol`](../test/Factory.t.sol) |
+
+> **Note on I11 (critical fix):** an earlier version checked withdrawals only against `Dashboard.withdrawableValue()`, which — because the late-mint pledge creates no Lido liability — did NOT reflect the pledge. That allowed a confirmed double-spend (borrow against vaultStETH on AAVE *and* withdraw the underlying ETH). I11 now enforces the pledge-backing floor explicitly. Residual risks (exogenous slashing, guard admin retention, AAVE-pause liveness) are documented in [`Double-Spend-Fix.md`](./Double-Spend-Fix.md) §4.
 
 ### Invariant enforcement map
 

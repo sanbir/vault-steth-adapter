@@ -424,6 +424,18 @@ contract Adapter is ReentrancyGuard {
         voluntaryLen = voluntaryQueue.length - voluntaryHead;
     }
 
+    /// @notice The amount of mint capacity (in stETH shares) currently pledged against
+    ///         `dashboard` and not yet redeemed. This is the quantity of vaultStETH that
+    ///         must remain mintable from the vault for the outstanding claim to be honored.
+    /// @dev    Read by `PledgeGuard.withdraw` to enforce that a borrower cannot withdraw
+    ///         the underlying stVault ETH below the level needed to back their pledge.
+    ///         Without this, the late-mint design (pledge mints no Lido liability, so
+    ///         `withdrawableValue` is not reduced) would let a borrower withdraw the
+    ///         collateral while the vaultStETH is still outstanding — a double-spend.
+    function pledgedSharesOf(address dashboard) external view returns (uint256) {
+        return pledges[dashboard].pledgedShares;
+    }
+
     /// @notice Read-only walker. Returns address(0) if nothing is currently drainable via
     ///         `redeem`. Does NOT mutate state — but note that the actual `redeem` call
     ///         will re-verify HF and may demote borrowers, so the returned address is a

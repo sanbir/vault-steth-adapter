@@ -10,7 +10,7 @@ Borrowers can pledge mint capacity from their per-borrower Lido stVault, receive
 - **Zero custom AAVE Spokes.** A single asset-listing AIP is the entire AAVE governance ask. The custom logic lives entirely on our side (one ERC-20, one Adapter, one PledgeGuard pattern, one atomic Factory) and uses standard `IDashboard.mintShares` against real Lido vaults.
 - **Healthy stVault never drained.** External redemption is gated by on-chain AAVE `healthFactor` reads. A redemption against a borrower's vault requires either (a) the borrower's HF < 1e18 on AAVE Main Spoke, OR (b) the borrower's explicit voluntary-close opt-in, OR (c) the caller IS the borrower. This invariant is formally verified by Halmos symbolic execution against the Adapter's full external surface — 12/12 checks pass, covering every reachable calldata combination.
 
-See [`docs/Architecture.md`](docs/Architecture.md) for the full architecture, [`docs/ADR.md`](docs/ADR.md) for the architecture decision (including the rejected alternatives), [`docs/Liquidation-guarantees.md`](docs/Liquidation-guarantees.md) for what is and isn't structurally guaranteed, and [`docs/Implementation-Plan.md`](docs/Implementation-Plan.md) for the build plan.
+See [`docs/Architecture.md`](docs/Architecture.md) for the full architecture, [`docs/ADR.md`](docs/ADR.md) for the architecture decision (including the rejected alternatives), [`docs/Liquidation-guarantees.md`](docs/Liquidation-guarantees.md) for what is and isn't structurally guaranteed, [`docs/Double-Spend-Fix.md`](docs/Double-Spend-Fix.md) for the late-mint double-spend fix and its residual risks, and [`docs/Implementation-Plan.md`](docs/Implementation-Plan.md) for the build plan.
 
 ## Architecture in one diagram
 
@@ -60,7 +60,11 @@ export MAINNET_RPC_URL=https://your-rpc-url
 forge test --no-match-path 'test/HalmosInvariants.t.sol'
 
 # Halmos symbolic verification (no fork; uses deployed mocks)
+# NOTE: Halmos needs AST in the artifacts. `forge test` builds WITHOUT AST, so run a
+# clean AST build first or Halmos reports "Adapter is not found".
+forge clean && forge build --ast
 halmos --contract HalmosInvariantsTest --no-status
+halmos --contract HalmosGuardTest --no-status
 ```
 
 A public RPC (`https://ethereum-rpc.publicnode.com`) is used as a fallback if `MAINNET_RPC_URL` is not set.
@@ -78,8 +82,10 @@ All test files; every fork test exercises real Lido V3 contracts on a mainnet fo
 | [`test/Liquidation.t.sol`](test/Liquidation.t.sol) | 5 | fork | End-to-end: pledge → mark → seize → redeem → real wstETH; atomic same-block; partial liquidation |
 | [`test/HFGating.t.sol`](test/HFGating.t.sol) | 9 | fork | The core invariant: healthy borrowers never drained even when others are liquidating, even with attackers, even after recovery+relapse |
 | [`test/SelfRedeem.t.sol`](test/SelfRedeem.t.sol) | 10 | fork | Borrower-only drain of own vault; revert paths for non-borrowers |
+| [`test/DoubleSpend.t.sol`](test/DoubleSpend.t.sol) | 6 | fork | Late-mint double-spend regression: withdraw can't unback the pledge; binary-search boundary test for the mint-buffer floor. See [`docs/Double-Spend-Fix.md`](docs/Double-Spend-Fix.md) |
 | [`test/HalmosInvariants.t.sol`](test/HalmosInvariants.t.sol) | **12 symbolic** | **formal verification** | Halmos proofs over the Adapter's full external surface — see "Formal verification" below |
-| **Total** | **79 forge + 12 halmos** | | All passing |
+| [`test/HalmosGuard.t.sol`](test/HalmosGuard.t.sol) | **2 symbolic** | **formal verification** | Halmos proof of the PledgeGuard pledge-backing floor (withdraw can never leave the pledge unbacked) |
+| **Total** | **85 forge + 14 halmos** | | All passing |
 
 Full forge suite runs in ~17 seconds on a typical RPC. Halmos suite runs in ~5 seconds.
 

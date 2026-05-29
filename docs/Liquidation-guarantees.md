@@ -2,6 +2,8 @@
 
 > **TL;DR**: Healthy stVaults can never be drained — that's mathematically proven by Halmos and is the core invariant the production-hardened Adapter ships. Among LIQUIDATING borrowers, however, `vaultStETH` fungibility means redemption is queue-FIFO-ordered rather than origin-tagged. The aggregate is always balanced and no borrower's vault drains beyond their authorized `pledgedShares`, but per-borrower attribution among the liquidating set is NOT structurally enforced.
 
+> **Related guarantee (separate from drainage):** the *backing* of the pledge — i.e. that the underlying stVault ETH cannot be withdrawn by the borrower while the `vaultStETH` is outstanding — is enforced by the PledgeGuard pledge-backing floor. This closes a confirmed late-mint **double-spend** (borrow against vaultStETH on AAVE *and* withdraw the ETH). See [`Double-Spend-Fix.md`](./Double-Spend-Fix.md). The "healthy never drained" invariant on this page is about *who can drain a pledge*; the double-spend fix is about *whether the pledge is backed at all*. Both are needed.
+
 ---
 
 ## The question
